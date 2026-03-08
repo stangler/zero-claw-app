@@ -1,0 +1,4 @@
+/.devcontainer
+/snapshots
+*.csv
+/.clinerules

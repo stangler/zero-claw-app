@@ -1,0 +1,49 @@
+# ================================================================
+# ZeroClaw スキル: TradingView スナップショット
+# 場所: /workspace/.zeroclaw/skills/tradingview_snapshot.toml
+# ================================================================
+#
+# ZeroClaw エージェントに自然言語で指示することで
+# TradingView のチャート画像を自動取得できます。
+#
+# 例:
+#   zeroclaw agent -m "BTC/USDTの日足チャートのスナップショットを撮って"
+#   zeroclaw agent -m "ETHUSDTを4時間足でダークテーマで撮影して"
+# ================================================================
+
+[skill]
+name        = "tradingview_snapshot"
+description = "TradingView チャートのスクリーンショットを取得する"
+version     = "1.0.0"
+
+# ── トリガーキーワード ──────────────────────────────────────────
+[[skill.triggers]]
+keywords = ["tradingview", "チャート", "snapshot", "スナップショット", "撮影", "スクリーンショット"]
+
+# ── アクション定義 ─────────────────────────────────────────────
+[[skill.actions]]
+name        = "take_snapshot"
+description = "指定シンボル・インターバルのチャートを撮影する"
+tool        = "shell"
+command     = """
+python3 /workspace/scripts/snapshot.py \
+  --symbol {symbol} \
+  --interval {interval} \
+  --theme {theme} \
+  --output /workspace/snapshots/{symbol}_{interval}_{timestamp}.png
+"""
+
+[skill.actions.parameters]
+symbol    = { type = "string", default = "BTCUSDT",  description = "ティッカーシンボル" }
+interval  = { type = "string", default = "1D",       description = "時間足 (1m/5m/15m/1H/4H/1D)" }
+theme     = { type = "string", default = "dark",     description = "dark または light" }
+timestamp = { type = "string", default = "{now:%Y%m%d_%H%M%S}", description = "自動生成タイムスタンプ" }
+
+# ── 成功時の応答テンプレート ───────────────────────────────────
+[[skill.responses]]
+on      = "success"
+message = "✅ スナップショットを保存しました: /workspace/snapshots/{symbol}_{interval}_{timestamp}.png"
+
+[[skill.responses]]
+on      = "error"
+message = "❌ スナップショットの取得に失敗しました。Chromium が起動できるか確認してください。"
