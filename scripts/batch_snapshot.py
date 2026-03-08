@@ -59,12 +59,12 @@ EXCHANGE = "TSE"   # 東証銘柄固定
 TSE_OPEN  = 9 * 60        # 09:00
 TSE_CLOSE = 15 * 60 + 30  # 15:30
 
-# 売買区分 → (色, 方向, 略称)
+# 売買区分 → (color, up, label)
 TRADE_STYLE = {
-    "買建": {"color": (255,  80,  80), "up": True,  "label": "L.Entry"},  # 赤  ロングエントリー
-    "売埋": {"color": ( 80, 160, 255), "up": False, "label": "L.Exit"},  # 青  ロングエグジット
-    "売建": {"color": (  0, 210, 120), "up": False, "label": "S.Entry"},  # 緑  ショートエントリー
-    "買埋": {"color": (255, 100, 200), "up": True,  "label": "S.Exit"},  # ピンク ショートエグジット
+    "買建": {"color": (0, 210, 120), "up": True,  "label": "L.Entry"},   # 緑  ロングエントリー
+    "売埋": {"color": (255, 100, 200), "up": False, "label": "L.Exit"},  # ピンク ロングエグジット
+    "売建": {"color": (255, 80, 80), "up": False, "label": "S.Entry"},   # 赤  ショートエントリー
+    "買埋": {"color": (80, 160, 255), "up": True,  "label": "S.Exit"},   # 青  ショートエグジット
 }
 # ナンピン追加エントリーの色
 NANPIN_COLOR = (255, 180, 0)  # オレンジ
@@ -275,6 +275,30 @@ def draw_triangle(draw: ImageDraw.Draw, cx: int, cy: int, size: int,
     draw.polygon(pts, fill=fill, outline=outline)
 
 
+def _triangle_pts(cx: int, cy: int, size: int, up: bool) -> list[tuple]:
+    if up:
+        return [(cx, cy - size), (cx - size, cy + size), (cx + size, cy + size)]
+    else:
+        return [(cx, cy + size), (cx - size, cy - size), (cx + size, cy - size)]
+
+
+def _draw_legend(draw: ImageDraw.Draw, width: int, height: int,
+                 font, theme: str) -> None:
+    items = [
+        ("▲ L.Entry (Long Entry)",    (0, 210, 120)),  # 緑
+        ("▽ L.Exit  (Long Exit)",     (80, 160, 255)),  # 青
+        ("▼ S.Entry (Short Entry)",   (255, 80, 80)),  # 赤
+        ("△ S.Exit  (Short Exit)",    (255, 100, 200)),  # ピンク
+        ("▲ Nanpin  (Add to pos)",    (255, 180,   0)),  # オレンジ
+    ]
+    lw, lh = 220, len(items) * 18 + 12
+    lx = width  - lw - 10
+    ly = height - lh - 10
+    draw.rectangle([lx, ly, lx+lw, ly+lh], fill=(0, 0, 0, 180))
+    for i, (text, color) in enumerate(items):
+        draw.text((lx+8, ly+6+i*18), text, font=font, fill=(*color, 230))
+
+
 def overlay_trades(
     image_path: Path,
     trade_list: list[dict],
@@ -329,32 +353,28 @@ def overlay_trades(
     # 同一X座標に重なるマーカーを縦方向にずらすため X別インデックス管理
     x_counts: dict[int, int] = defaultdict(int)
 
-    # グループID → エントリーX座標リスト (括弧描画用)
-    group_xs: dict[int, list[int]] = defaultdict(list)
-
+    # トレードを時間順にソートして描画位置を計算
     sorted_trades = sorted(trade_list, key=lambda t: t["dt"])
-
+    group_xs = {}  # group_id -> [x,...] (ナンピン用)
     for trade in sorted_trades:
-        style = TRADE_STYLE.get(trade["baibai"])
-        if not style:
-            continue
-
-        is_nanpin = trade.get("nanpin", False)
-        color     = NANPIN_COLOR if is_nanpin else style["color"]
-        is_up     = style["up"]
-        label     = "Nanpin" if is_nanpin else style["label"]
-        price     = trade["price"]
-        qty       = trade["qty"]
-        group_id  = trade.get("group_id")
-        group_avg = trade.get("group_avg")
-
+        # X座標計算
         x = time_to_x(trade["dt"], chart_left, chart_right)
+
+        # 同一Xに複数ある場合は縦にずらすインデックスを取得
         n = x_counts[x]
         x_counts[x] += 1
 
-        # エントリーのX座標をグループに記録
-        if trade["baibai"] in ("買建", "売建") and group_id:
-            group_xs[group_id].append(x)
+        # トレード属性
+        baibai = trade.get("baibai", "")
+        style = TRADE_STYLE.get(baibai, None)
+        is_nanpin = trade.get("nanpin", False)
+        group_avg = trade.get("group_avg", None)
+        group_id = trade.get("group_id", None)
+        price = trade.get("price", 0.0)
+        qty = trade.get("qty", 0)
+        label = style["label"] if style else ("Nanpin" if is_nanpin else "")
+        color = style["color"] if style else NANPIN_COLOR
+        is_up = style["up"] if style else True
 
         # Y座標
         if is_up:
@@ -386,7 +406,10 @@ def overlay_trades(
 
         tx = x + marker_size + 3
         ty = cy - 10
-        bbox = draw.textbbox((tx, ty), text, font=font_sm)
+        try:
+            bbox = draw.textbbox((tx, ty), text, font=font_sm)
+        except Exception:
+            bbox = (tx, ty, tx + 100, ty + 14)
         pad = 2
         draw.rectangle(
             [bbox[0]-pad, bbox[1]-pad, bbox[2]+pad, bbox[3]+pad],
@@ -396,11 +419,15 @@ def overlay_trades(
         draw.text((tx, ty + 15), time_str, font=font_xs, fill=(200, 200, 200, 220))
 
         # ナンピングループの平均取得単価を初回エントリーのラベルに追加
-        if (not is_nanpin and trade["baibai"] in ("買建", "売建")
+        if (not is_nanpin and baibai in ("買建", "売建")
                 and group_avg and trade.get("group_count", 1) > 1):
             avg_text = f"Avg:{group_avg:,.1f}"
             draw.text((tx, ty + 28), avg_text, font=font_xs,
                       fill=(255, 200, 50, 230))
+
+        # グループX座標を記録（ナンピン括弧描画用）
+        if group_id:
+            group_xs.setdefault(group_id, []).append(x)
 
     # ナンピングループ括弧を描画
     # グループ内エントリーを横線＋縦ティックで結び、Avgを上部に表示
@@ -432,13 +459,21 @@ def overlay_trades(
             # Avgラベル
             avg_text = f"Avg:{avg:,.1f}"
             mid_x = (bx1 + bx2) // 2
-            bbox = draw.textbbox((mid_x, by - 20), avg_text, font=font_sm)
+            try:
+                bbox = draw.textbbox((mid_x, by - 20), avg_text, font=font_sm)
+            except Exception:
+                bbox = (mid_x - 30, by - 22, mid_x + 30, by - 6)
             draw.rectangle(
                 [bbox[0]-3, bbox[1]-2, bbox[2]+3, bbox[3]+2],
                 fill=(40, 30, 0, 190),
             )
-            draw.text((mid_x, by - 20), avg_text, font=font_sm,
-                      fill=(*bc, 255), anchor="mm" if hasattr(font_sm, "getbbox") else None)
+            # anchor="mm" may not be supported on all Pillow versions; use centered draw if available
+            try:
+                draw.text((mid_x, by - 20), avg_text, font=font_sm,
+                          fill=(*bc, 255), anchor="mm")
+            except Exception:
+                draw.text((mid_x - (bbox[2]-bbox[0])//2, by - 20), avg_text, font=font_sm,
+                          fill=(*bc, 255))
 
     # 凡例パネル (右下)
     _draw_legend(draw, width, height, font_sm, theme)
@@ -448,124 +483,34 @@ def overlay_trades(
     composited.save(str(image_path), format="PNG")
 
 
-def _triangle_pts(cx: int, cy: int, size: int, up: bool) -> list[tuple]:
-    if up:
-        return [(cx, cy - size), (cx - size, cy + size), (cx + size, cy + size)]
-    else:
-        return [(cx, cy + size), (cx - size, cy - size), (cx + size, cy - size)]
-
-
-def _draw_legend(draw: ImageDraw.Draw, width: int, height: int,
-                 font, theme: str) -> None:
-    items = [
-        ("▲ L.Entry (Long Entry)",    (255,  80,  80)),  # 赤
-        ("▽ L.Exit  (Long Exit)",     ( 80, 160, 255)),  # 青
-        ("▼ S.Entry (Short Entry)",   (  0, 210, 120)),  # 緑
-        ("△ S.Exit  (Short Exit)",    (255, 100, 200)),  # ピンク
-        ("▲ Nanpin  (Add to pos)",    (255, 180,   0)),  # オレンジ
-    ]
-    lw, lh = 220, len(items) * 18 + 12
-    lx = width  - lw - 10
-    ly = height - lh - 10
-    draw.rectangle([lx, ly, lx+lw, ly+lh], fill=(0, 0, 0, 180))
-    for i, (text, color) in enumerate(items):
-        draw.text((lx+8, ly+6+i*18), text, font=font, fill=(*color, 230))
-
-
 # ══════════════════════════════════════════════
 # スクリーンショット撮影
 # ══════════════════════════════════════════════
 
-
-
-
-def _add_vwap_via_ui(page) -> None:
-    """Indicatorsボタン → VWAP検索 → クリックで追加"""
+def capture_chart(browser, url: str, output_path: Path, width: int, height: int, wait_ms: int) -> bool:
+    """
+    Playwright を使ってチャートページを開きスクリーンショットを保存する。
+    成功なら True、失敗なら False を返す。
+    """
     try:
-        # Indicatorsボタンをクリック (debug_vwap.pyで動作確認済みのセレクター)
-        btn = page.locator("#header-toolbar-indicators").first
-        btn.wait_for(state="attached", timeout=8_000)
-        btn.click(force=True)
-        time.sleep(1.5)
-
-        # 検索ボックスに "VWAP" と入力
-        inp = page.locator("input[placeholder*='Search']").first
-        inp.wait_for(state="visible", timeout=6_000)
-        inp.fill("VWAP")
-        time.sleep(1.5)
-
-        # span.title-cIIj4HrJ の中から "Volume Weighted Average Price" をクリック
-        item = page.locator("span.title-cIIj4HrJ", has_text="Volume Weighted Average Price").first
-        item.wait_for(state="visible", timeout=6_000)
-        item.click()
-        time.sleep(1.5)
-
-        # ダイアログを閉じる
-        page.keyboard.press("Escape")
-        time.sleep(1.0)
-        print("    ✓ VWAP追加")
-
-        time.sleep(0.5)
-        page.keyboard.press("Escape")
-        time.sleep(0.8)
-
-    except Exception as e:
-        print(f"    ⚠ VWAP追加失敗: {e}")
-        try:
-            page.keyboard.press("Escape")
-        except Exception:
-            pass
-
-
-def take_screenshot(
-    url: str,
-    output_path: Path,
-    width: int,
-    height: int,
-    wait_ms: int,
-    browser,
-    add_vwap: bool = False,
-) -> bool:
-    page = browser.new_page(viewport={"width": width, "height": height})
-    try:
-        try:
-            page.goto(url, wait_until="networkidle", timeout=40_000)
-        except PWTimeout:
-            print("    ⚠ networkidle タイムアウト — そのまま続行")
-
-        time.sleep(wait_ms / 1000)
-
-        # 広告・ポップアップを非表示
-        page.add_style_tag(content="""
-            .tv-dialog, .tv-dialog__modal-container,
-            div[class*="popup"], div[class*="banner"],
-            div[class*="ad-"], div[class*="notification"],
-            div[class*="toast"], div[class*="cookie"] {
-                display: none !important;
-            }
-        """)
-
-        # canvas が出るまで待つ
-        try:
-            page.wait_for_selector("canvas", timeout=10_000)
-        except PWTimeout:
-            print("    ⚠ canvas が見つかりません")
-
-
-
-        # VWAPをIndicatorsから追加
-        if add_vwap:
-            _add_vwap_via_ui(page)
-
+        page = browser.new_page(viewport={"width": width, "height": height})
+        # 一部のサイトはヘッダーやポップアップが出るため、十分に待つ
+        page.goto(url, timeout=wait_ms)
+        # TradingView は描画に時間がかかることがあるので少し待機
+        time.sleep(min(5, wait_ms / 1000.0))
+        # 追加の待機で安定させる（要調整）
+        page.wait_for_timeout(1000)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         page.screenshot(path=str(output_path), full_page=False)
-        return True
-
-    except Exception as e:
-        print(f"    [ERROR] {e}")
-        return False
-    finally:
         page.close()
+        return True
+    except Exception as e:
+        try:
+            page.close()
+        except Exception:
+            pass
+        print(f"    [ERROR] スクリーンショット取得失敗: {e}")
+        return False
 
 
 # ══════════════════════════════════════════════
@@ -610,14 +555,6 @@ def main():
         "--no-markers", action="store_true",
         help="約定マーカーの合成をスキップ"
     )
-    parser.add_argument(
-        "--vwap", action="store_true", default=True,
-        help="VWAPを表示する (デフォルト: ON)"
-    )
-    parser.add_argument(
-        "--no-vwap", action="store_true",
-        help="VWAPを非表示にする"
-    )
 
     args = parser.parse_args()
 
@@ -643,8 +580,6 @@ def main():
     print(f"  インターバル : 1分足 (1日分)")
     print(f"  テーマ       : {args.theme}")
     print(f"  マーカー合成 : {'OFF' if args.no_markers else 'ON'}")
-    show_vwap = args.vwap and not args.no_vwap
-    print(f"  VWAP        : {'ON' if show_vwap else 'OFF'}")
     print(f"  保存先       : {args.outdir}")
     print("=" * 60)
     print()
@@ -684,19 +619,9 @@ def main():
             out_dir     = Path(args.outdir) / dt_label
             output_path = out_dir / f"{EXCHANGE}_{code}_1m_{dt_label}.png"
 
-            print(f"    URL: {url[:80]}...")
+            success = capture_chart(browser, url, output_path, args.width, args.height, args.wait)
 
-            ok = take_screenshot(
-                url, output_path,
-                width=args.width, height=args.height,
-                wait_ms=args.wait,
-                browser=browser,
-                add_vwap=show_vwap,
-            )
-
-            if ok and output_path.exists():
-                size_kb = output_path.stat().st_size // 1024
-
+            if success and output_path.exists():
                 # マーカー合成
                 if not args.no_markers and trade_list:
                     print(f"    ▸ マーカー合成中... ({len(trade_list)}件)")
@@ -712,7 +637,10 @@ def main():
                     except Exception as e:
                         print(f"    [WARN] マーカー合成エラー: {e}")
 
-                size_kb_after = output_path.stat().st_size // 1024
+                try:
+                    size_kb_after = output_path.stat().st_size // 1024
+                except Exception:
+                    size_kb_after = 0
                 print(f"    ✓ 保存: {output_path.name}  ({size_kb_after} KB)")
                 results["ok"].append(f"{code} {name}")
             else:
